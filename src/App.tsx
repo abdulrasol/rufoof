@@ -4,9 +4,9 @@ import {
   Activity, AlertCircle, ArrowDownLeft, ArrowRight, ArrowUpRight, BookOpen, Check,
   ChevronRight, ClipboardCheck, CloudOff, Download, FileSpreadsheet, FolderOpen,
   Languages, Layers3, LayoutDashboard, LogOut, Package, Pencil, Plus, Printer, RefreshCw,
-  Search, Settings, ShieldCheck, SlidersHorizontal, X,
+  Search, Settings, ShieldCheck, SlidersHorizontal, Smartphone, Upload, X,
 } from 'lucide-react'
-import { authorizeGoogle, googleRepository, WorkbookDataError, WorkbookDiscoveryError } from './lib/google'
+import { authorizeGoogle, authorizeGoogleSilently, googleRepository, WorkbookDataError, WorkbookDiscoveryError } from './lib/google'
 import { exchangeGoogleToken, fetchApplicationAccess, listSavedWorkbooks, logoutSubultechSession, refreshSubultechSession, saveWorkbookReference, SubultechError } from './lib/subultech'
 import type { ApplicationAccess, SubultechSession } from './lib/subultech'
 import { createDemoRepository } from './lib/demo'
@@ -16,6 +16,13 @@ import { FieldValueError } from './lib/fields'
 import { isRepairableIssue } from './lib/schema'
 import type { SchemaIssue } from './lib/schema'
 import { getBalance, getRunningBalances, movementDelta, toCSV } from './lib/inventory'
+import { buildExportSheets, downloadWorkbook } from './lib/excel'
+import { buildPreview, CORE_IMPORTS, mappingProblems, suggestTargets } from './lib/import'
+import type { ImportIssueCode, ImportTarget } from './lib/import'
+import { clearIdentity, clearSession, isRememberEnabled, loadIdentity, loadLastWorkbook, saveIdentity, saveLastWorkbook, setRememberEnabled } from './lib/session'
+import type { LastWorkbook } from './lib/session'
+import { readSpreadsheet, SpreadsheetError, toTable } from './lib/spreadsheet'
+import type { ImportSheet, ImportTable } from './lib/spreadsheet'
 import type { CustomField, FieldTarget, FieldType, GoogleSession, InventoryRepository, Item, Movement, WarehouseData, WorkbookRef } from './lib/types'
 import { initialLanguage, messages } from './i18n'
 import type { Language, MessageKey } from './i18n'
@@ -25,7 +32,13 @@ type Translate = (key: MessageKey) => string
 type Page = 'overview' | 'materials' | 'movements' | 'stockCount' | 'fields' | 'settings'
 type Mode = 'google' | 'demo' | 'cache' | null
 type PendingCheck = { target: 'item' | 'movement' | 'field'; id: string }
-type Dialog = { kind: 'item'; item?: Item } | { kind: 'movement'; itemId?: string } | { kind: 'detail'; itemId: string } | { kind: 'field'; field?: CustomField } | null
+type Dialog = { kind: 'item'; item?: Item } | { kind: 'movement'; itemId?: string } | { kind: 'detail'; itemId: string } | { kind: 'field'; field?: CustomField } | { kind: 'import' } | null
+interface InstallPromptEvent extends Event { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }> }
+const coreImportKeys: Record<string, MessageKey> = { code: 'code', name: 'name', unit: 'unit', openingBalance: 'openingBalance', category: 'category', minimumStock: 'minimumStock', location: 'location', notes: 'notes' }
+const importIssueKeys: Record<ImportIssueCode, MessageKey> = {
+  code: 'importErrCode', name: 'importErrName', unit: 'importErrUnit', openingBalance: 'importErrOpening',
+  minimumStock: 'importErrMinimum', customNumber: 'importErrCustomNumber', customDate: 'importErrCustomDate', duplicateCode: 'importErrDuplicate',
+}
 const emptyData: WarehouseData = { items: [], movements: [], fields: [] }
 const issueKeys: Record<SchemaIssue['code'], MessageKey> = {
   sheetCount: 'schemaSheetCount', sheetDimensions: 'schemaSheetDimensions', duplicateHeader: 'schemaDuplicateHeader',
