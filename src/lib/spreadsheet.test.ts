@@ -14,6 +14,12 @@ describe('CSV parsing', () => {
   it('keeps a trailing empty field', () => {
     expect(parseCsv('a,b,\n1,2,')).toEqual([['a', 'b', ''], ['1', '2', '']])
   })
+
+  it('rejects malformed quotes instead of silently merging records', () => {
+    expect(() => parseCsv('code,notes\nA,"unclosed\nB,lost')).toThrow(/unreadable/u)
+    expect(() => parseCsv('a,b\n1,"text"extra')).toThrow(/unreadable/u)
+    expect(() => parseCsv('a,b\n1,te"xt')).toThrow(/unreadable/u)
+  })
 })
 
 describe('table detection', () => {
@@ -29,6 +35,7 @@ describe('table detection', () => {
     })
     expect(table).toMatchObject({ headerRow: 1, headers: ['Code', 'Name', 'Unit'], sheet: 'Sheet1' })
     expect(table.rows).toEqual([['A-1', 'Paper', 'box']])
+    expect(table.rowNumbers).toEqual([3])
   })
 
   it('rejects an empty sheet', () => {

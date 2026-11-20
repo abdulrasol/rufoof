@@ -16,6 +16,38 @@ describe('demo repository', () => {
     expect((await createDemoRepository().loadWorkbook('demo')).fields.some(field => field.id === 'expiry')).toBe(false)
   })
 
+  it('keeps required fields per workbook without invalidating existing records', async () => {
+    const demo = createDemoRepository()
+    const first = await demo.createWorkbook('First')
+    const second = await demo.createWorkbook('Second')
+    const item = { id: 'one', code: '', name: 'Paper', unit: '', openingBalance: 0, category: '', minimumStock: null, location: '', notes: '', custom: {} }
+    await demo.saveItem(first.id, item)
+    await demo.addField(first.id, { id: 'batch', name: 'Batch', type: 'text', target: 'items' })
+    await demo.saveItemRequirements(first.id, ['name', 'unit', 'field:batch'])
+    expect((await demo.loadWorkbook(first.id)).requiredItemFields).toEqual(['name', 'unit', 'field:batch'])
+    expect((await demo.loadWorkbook(second.id)).requiredItemFields).toBeUndefined()
+    expect((await demo.loadWorkbook(first.id)).items).toContainEqual(item)
+    await expect(demo.saveItem(first.id, item)).rejects.toThrow(/required/i)
+    await expect(demo.saveItem(first.id, { ...item, unit: 'box', custom: { batch: '  ' } })).rejects.toThrow(/required/i)
+    await demo.saveItem(first.id, { ...item, unit: 'box', custom: { batch: 'A' } })
+    await expect(demo.saveItemRequirements(first.id, ['unit'])).rejects.toThrow(/invalid/i)
+    await expect(demo.saveItemRequirements(first.id, ['name', 'field:missing'])).rejects.toThrow(/invalid/i)
+  })
+
+  it('accepts multiple blank codes and rejects stale settings or duplicate nonempty codes', async () => {
+    const demo = createDemoRepository()
+    const workbook = await demo.createWorkbook('Import')
+    const item = { id: 'one', code: '', name: 'Paper', unit: '', openingBalance: 0, category: '', minimumStock: null, location: '', notes: '', custom: {} }
+    await demo.appendItems(workbook.id, [item, { ...item, id: 'two' }], ['name', 'openingBalance'])
+    await demo.saveItemRequirements(workbook.id, ['name', 'unit'])
+    await expect(demo.saveItemRequirements(workbook.id, ['name'], ['name', 'openingBalance'])).rejects.toThrow(/changed/i)
+    expect((await demo.loadWorkbook(workbook.id)).requiredItemFields).toEqual(['name', 'unit'])
+    await expect(demo.appendItems(workbook.id, [{ ...item, id: 'three', unit: 'box' }], ['name', 'openingBalance'])).rejects.toThrow(/changed/i)
+    await expect(demo.saveItem(workbook.id, { ...item, id: 'three', unit: 'box' }, ['name', 'openingBalance'])).rejects.toThrow(/changed/i)
+    await expect(demo.appendItems(workbook.id, [{ ...item, id: 'three', unit: 'box', code: 'X' }, { ...item, id: 'four', unit: 'box', code: 'x' }])).rejects.toThrow(/code/i)
+    expect((await demo.loadWorkbook(workbook.id)).items).toHaveLength(2)
+  })
+
   it('changes an existing field type only when stored values still fit', async () => {
     const demo = createDemoRepository()
     const [workbook] = await demo.listWorkbooks()

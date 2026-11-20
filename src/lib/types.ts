@@ -1,5 +1,7 @@
 export type FieldTarget = 'items' | 'movements'
 export type FieldType = 'text' | 'number' | 'date'
+export type CoreItemField = 'code' | 'name' | 'unit' | 'openingBalance' | 'category' | 'minimumStock' | 'location' | 'notes'
+export type ItemRequirement = CoreItemField | `field:${string}`
 
 export interface CustomField {
   id: string
@@ -39,6 +41,7 @@ export interface WarehouseData {
   items: Item[]
   movements: Movement[]
   fields: CustomField[]
+  requiredItemFields?: ItemRequirement[]
 }
 
 export interface WorkbookRef {
@@ -58,8 +61,9 @@ export interface InventoryRepository {
   listWorkbooks(): Promise<WorkbookRef[]>
   createWorkbook(name: string): Promise<WorkbookRef>
   loadWorkbook(workbookId: string): Promise<WarehouseData>
-  saveItem(workbookId: string, item: Item): Promise<void>
-  appendItems(workbookId: string, items: Item[]): Promise<void>
+  saveItem(workbookId: string, item: Item, expectedRequirements?: readonly ItemRequirement[]): Promise<void>
+  appendItems(workbookId: string, items: Item[], expectedRequirements?: readonly ItemRequirement[]): Promise<void>
+  saveItemRequirements(workbookId: string, required: ItemRequirement[], expectedRequirements?: readonly ItemRequirement[]): Promise<void>
   appendMovements(workbookId: string, movements: Movement[]): Promise<void>
   addField(workbookId: string, field: CustomField): Promise<void>
   updateField(workbookId: string, field: CustomField): Promise<void>

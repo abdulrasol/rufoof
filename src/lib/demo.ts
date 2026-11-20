@@ -1,6 +1,6 @@
 import { getRunningBalances } from './inventory'
-import { FieldValueError, isValidFieldValue } from './fields'
-import type { CustomField, InventoryRepository, Item, Movement, WarehouseData, WorkbookRef } from './types'
+import { DEFAULT_REQUIRED_ITEM_FIELDS, FieldValueError, isValidFieldValue, missingItemRequirements, validateItemRequirements } from './fields'
+import type { CustomField, InventoryRepository, Item, ItemRequirement, Movement, WarehouseData, WorkbookRef } from './types'
 
 const copy = <T>(value: T): T => structuredClone(value)
 
@@ -35,6 +35,11 @@ export function createDemoRepository(): InventoryRepository {
       }
     }
   }
+  const checkRequirements = (data: WarehouseData, expected?: readonly ItemRequirement[]) => {
+    const required = data.requiredItemFields ?? DEFAULT_REQUIRED_ITEM_FIELDS
+    if (expected && (expected.length !== required.length || expected.some(field => !required.includes(field)))) throw new Error('Required fields changed; reload the ledger')
+    return required
+  }
   return {
     async listWorkbooks() { return [...workbooks.values()].map(({ ref }) => copy(ref)) },
     async createWorkbook(name: string) {
@@ -44,10 +49,12 @@ export function createDemoRepository(): InventoryRepository {
       return copy(ref)
     },
     async loadWorkbook(id: string) { return copy(get(id).data) },
-    async saveItem(id: string, item: Item) {
+    async saveItem(id: string, item: Item, expected?: readonly ItemRequirement[]) {
       const { data } = get(id)
+      const required = checkRequirements(data, expected)
       if (!item.id || !item.name || !Number.isFinite(item.openingBalance) || (item.minimumStock !== null && !Number.isFinite(item.minimumStock))) throw new Error('Invalid item')
       checkCustom(data, 'items', item.custom)
+      if (missingItemRequirements(item, required).length) throw new Error('Required item fields are missing')
       const index = data.items.findIndex(existing => existing.id === item.id)
       if (index < 0) data.items.push(copy(item))
       else {
@@ -55,20 +62,28 @@ export function createDemoRepository(): InventoryRepository {
         data.items[index] = copy(item)
       }
     },
-    async appendItems(id: string, items: Item[]) {
+    async appendItems(id: string, items: Item[], expected?: readonly ItemRequirement[]) {
       const { data } = get(id)
+      const required = checkRequirements(data, expected)
       const ids = new Set(data.items.map(item => item.id))
       const codes = new Set(data.items.map(item => item.code.trim().toLowerCase()))
       for (const item of items) {
         if (!item.id || !item.name || !Number.isFinite(item.openingBalance) || (item.minimumStock !== null && !Number.isFinite(item.minimumStock))) throw new Error('Invalid item')
         checkCustom(data, 'items', item.custom)
+        if (missingItemRequirements(item, required).length) throw new Error('Required item fields are missing')
         if (ids.has(item.id)) throw new Error(`Duplicate item ID: ${item.id}`)
         const code = item.code.trim().toLowerCase()
-        if (!code || codes.has(code)) throw new Error(`Item code already exists: ${item.code}`)
+        if (code && codes.has(code)) throw new Error(`Item code already exists: ${item.code}`)
         ids.add(item.id)
-        codes.add(code)
+        if (code) codes.add(code)
       }
       data.items.push(...copy(items))
+    },
+    async saveItemRequirements(id, required, expected) {
+      const { data } = get(id)
+      checkRequirements(data, expected)
+      validateItemRequirements(required, data.fields)
+      data.requiredItemFields = [...required]
     },
     async appendMovements(id: string, movements: Movement[]) {
       const { data } = get(id)

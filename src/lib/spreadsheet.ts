@@ -10,6 +10,7 @@ export interface ImportTable {
   headerRow: number
   headers: string[]
   rows: string[][]
+  rowNumbers: number[]
 }
 
 export type SpreadsheetErrorCode = 'unsupported' | 'empty' | 'tooLarge' | 'unreadable'
@@ -44,32 +45,34 @@ export function parseCsv(text: string): string[][] {
   let row: string[] = []
   let field = ''
   let quoted = false
+  let closedQuote = false
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index]
     if (quoted) {
       if (char === '"') {
         if (source[index + 1] === '"') { field += '"'; index += 1 }
-        else quoted = false
+        else { quoted = false; closedQuote = true }
       } else field += char
-    } else if (char === '"') {
+    } else if (char === '"' && !field && !closedQuote) {
       quoted = true
     } else if (char === ',') {
-      row.push(field); field = ''
+      row.push(field); field = ''; closedQuote = false
     } else if (char === '\n' || char === '\r') {
       if (char === '\r' && source[index + 1] === '\n') index += 1
-      row.push(field); rows.push(row); row = []; field = ''
+      row.push(field); rows.push(row); row = []; field = ''; closedQuote = false
+    } else if (closedQuote || char === '"') {
+      throw new SpreadsheetError('unreadable')
     } else field += char
   }
-  if (field !== '' || row.length) { row.push(field); rows.push(row) }
+  if (quoted) throw new SpreadsheetError('unreadable')
+  if (field !== '' || row.length || closedQuote) { row.push(field); rows.push(row) }
   return rows
 }
 
 export async function readSpreadsheet(file: File): Promise<ImportSheet[]> {
   const name = file.name.toLowerCase()
   if (name.endsWith('.csv')) {
-    const sheets = [{ name: file.name, rows: parseCsv(await file.text()) }]
-    for (const sheet of sheets) guard(sheet)
-    return sheets
+    return [{ name: file.name, rows: parseCsv(await file.text()) }]
   }
   if (!name.endsWith('.xlsx')) throw new SpreadsheetError('unsupported')
   let parsed: Array<{ sheet: string; data: unknown[][] }>
@@ -81,7 +84,6 @@ export async function readSpreadsheet(file: File): Promise<ImportSheet[]> {
   const sheets = parsed.map(sheet => ({ name: sheet.sheet, rows: sheet.data.map(row => row.map(cellText)) }))
     .filter(sheet => sheet.rows.some(row => row.some(value => value !== '')))
   if (!sheets.length) throw new SpreadsheetError('empty')
-  for (const sheet of sheets) guard(sheet)
   return sheets
 }
 
@@ -91,6 +93,7 @@ function guard(sheet: ImportSheet): void {
 }
 
 export function toTable(sheet: ImportSheet): ImportTable {
+  guard(sheet)
   const headerRow = sheet.rows.findIndex(row => row.some(value => value.trim() !== ''))
   if (headerRow < 0) throw new SpreadsheetError('empty')
   const width = Math.max(1, ...sheet.rows.map(row => {
@@ -100,9 +103,10 @@ export function toTable(sheet: ImportSheet): ImportTable {
   }))
   if (width > MAX_COLUMNS) throw new SpreadsheetError('tooLarge')
   const headers = Array.from({ length: width }, (_, index) => (sheet.rows[headerRow]?.[index] ?? '').trim())
-  const rows = sheet.rows.slice(headerRow + 1)
-    .filter(row => row.some(value => value.trim() !== ''))
-    .map(row => Array.from({ length: width }, (_, index) => (row[index] ?? '').trim()))
+  const entries = sheet.rows.slice(headerRow + 1)
+    .map((row, index) => ({ row, rowNumber: headerRow + index + 2 }))
+    .filter(entry => entry.row.some(value => value.trim() !== ''))
+  const rows = entries.map(({ row }) => Array.from({ length: width }, (_, index) => (row[index] ?? '').trim()))
   if (rows.length > MAX_ROWS) throw new SpreadsheetError('tooLarge')
-  return { sheet: sheet.name, headerRow, headers, rows }
+  return { sheet: sheet.name, headerRow, headers, rows, rowNumbers: entries.map(entry => entry.rowNumber) }
 }

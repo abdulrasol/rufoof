@@ -1,22 +1,24 @@
-import { isValidFieldValue } from './fields'
+import { DEFAULT_REQUIRED_ITEM_FIELDS, isValidFieldValue } from './fields'
 import type { ImportTable } from './spreadsheet'
-import type { CustomField, Item } from './types'
+import type { CustomField, Item, ItemRequirement } from './types'
 
 export const CORE_IMPORTS = ['code', 'name', 'unit', 'openingBalance', 'category', 'minimumStock', 'location', 'notes'] as const
 export type CoreImport = typeof CORE_IMPORTS[number]
 export type ImportTarget = '' | CoreImport | `field:${string}`
 
-export type ImportIssueCode = 'code' | 'name' | 'unit' | 'openingBalance' | 'minimumStock' | 'customNumber' | 'customDate' | 'duplicateCode'
+export type ImportIssueCode = 'code' | 'name' | 'unit' | 'openingBalance' | 'minimumStock' | 'customNumber' | 'customDate' | 'duplicateCode' | 'required'
 
 export interface ImportIssue {
   row: number
   code: ImportIssueCode
+  field?: ItemRequirement
 }
 
 export interface ImportPreview {
   items: Item[]
   issues: ImportIssue[]
   skipped: number
+  existingRows: number[]
 }
 
 const numeric = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/iu
@@ -27,7 +29,7 @@ const aliases: Record<CoreImport, string[]> = {
   unit: ['unit', 'uom', 'measure', 'وحدة', 'الوحدة', 'وحدةالقياس'],
   openingBalance: ['openingbalance', 'opening', 'openingstock', 'balance', 'quantity', 'qty', 'stock', 'رصيد', 'الرصيد', 'الرصيدالافتتاحي', 'افتتاحي', 'كمية', 'الكمية', 'المخزون'],
   category: ['category', 'group', 'type', 'تصنيف', 'التصنيف', 'فئة', 'الفئة', 'نوع', 'النوع'],
-  minimumStock: ['minimumstock', 'minimum', 'min', 'minstock', 'reorderlevel', 'reorder', 'حدأدنى', 'الحدالأدنى', 'حدالطلب', 'الحد'],
+  minimumStock: ['minimumstock', 'minimum', 'min', 'minstock', 'reorderlevel', 'reorder', 'حدأدنى', 'الحدالأدنى', 'الحدالأدنىللمخزون', 'حدالطلب', 'الحد'],
   location: ['location', 'shelf', 'rack', 'position', 'موقع', 'الموقع', 'رف', 'الرف', 'مكان', 'المكان'],
   notes: ['notes', 'note', 'remarks', 'comment', 'ملاحظات', 'ملاحظة', 'تعليق', 'تعليقات'],
 }
@@ -41,17 +43,19 @@ export function suggestTargets(headers: string[], fields: CustomField[] = []): I
   const custom = fields.filter(field => field.target === 'items')
   return headers.map(header => {
     const key = normalize(header)
-    if (!key) return ''
-    const core = CORE_IMPORTS.find(name => !used.has(name) && aliases[name].some(alias => normalize(alias) === key))
-    if (core) { used.add(core); return core }
-    const field = custom.find(entry => !used.has(`field:${entry.id}`) && normalize(entry.name) === key)
-    if (field) { const target: ImportTarget = `field:${field.id}`; used.add(target); return target }
-    return ''
+    if (!key || headers.filter(entry => normalize(entry) === key).length > 1) return ''
+    const candidates: ImportTarget[] = [
+      ...CORE_IMPORTS.filter(name => aliases[name].some(alias => normalize(alias) === key)),
+      ...custom.filter(field => normalize(field.name) === key).map((field): ImportTarget => `field:${field.id}`),
+    ]
+    if (candidates.length !== 1 || used.has(candidates[0])) return ''
+    used.add(candidates[0])
+    return candidates[0]
   })
 }
 
-export function mappingProblems(targets: ImportTarget[]): { missing: CoreImport[]; duplicate: string[] } {
-  const missing = (['code', 'name', 'unit', 'openingBalance'] as CoreImport[]).filter(target => !targets.includes(target))
+export function mappingProblems(targets: ImportTarget[], requiredFields: readonly ItemRequirement[] = DEFAULT_REQUIRED_ITEM_FIELDS): { missing: ItemRequirement[]; duplicate: string[] } {
+  const missing = requiredFields.filter(target => !targets.includes(target))
   const seen = new Set<string>()
   const duplicate: string[] = []
   for (const target of targets) {
@@ -62,18 +66,31 @@ export function mappingProblems(targets: ImportTarget[]): { missing: CoreImport[
   return { missing, duplicate: [...new Set(duplicate)] }
 }
 
-export function buildPreview(table: ImportTable, targets: ImportTarget[], fields: CustomField[], existingCodes: string[]): ImportPreview {
+export function editImportTable(table: ImportTable, edits: Readonly<Record<number, Readonly<Record<number, string>>>>, skippedRows: ReadonlySet<number>): ImportTable {
+  const rows: string[][] = []
+  const rowNumbers: number[] = []
+  table.rowNumbers.forEach((rowNumber, index) => {
+    if (skippedRows.has(rowNumber)) return
+    const changes = edits[rowNumber]
+    rows.push(changes ? table.rows[index].map((value, column) => changes[column] ?? value) : table.rows[index])
+    rowNumbers.push(rowNumber)
+  })
+  return { ...table, rows, rowNumbers }
+}
+
+export function buildPreview(table: ImportTable, targets: ImportTarget[], fields: CustomField[], existingCodes: string[], requiredFields: readonly ItemRequirement[] = DEFAULT_REQUIRED_ITEM_FIELDS): ImportPreview {
   const columns = new Map<ImportTarget, number>()
   targets.forEach((target, index) => { if (target && !columns.has(target)) columns.set(target, index) })
   const custom = new Map<`field:${string}`, CustomField>(fields.filter(field => field.target === 'items').map(field => [`field:${field.id}`, field] as const))
-  const existing = new Set(existingCodes.map(normalize))
+  const normalizeCode = (value: string) => value.trim().toLowerCase()
+  const existing = new Set(existingCodes.map(normalizeCode).filter(Boolean))
   const seen = new Set<string>()
   const items: Item[] = []
   const issues: ImportIssue[] = []
-  let skipped = 0
+  const existingRows: number[] = []
 
   table.rows.forEach((row, index) => {
-    const rowNumber = table.headerRow + index + 2
+    const rowNumber = table.rowNumbers[index]
     const value = (target: ImportTarget) => {
       const column = columns.get(target)
       return column === undefined ? '' : (row[column] ?? '').trim()
@@ -83,10 +100,13 @@ export function buildPreview(table: ImportTable, targets: ImportTarget[], fields
     const unit = value('unit')
     const opening = value('openingBalance')
     const minimum = value('minimumStock')
-    if (!code) { issues.push({ row: rowNumber, code: 'code' }); return }
-    if (!name) { issues.push({ row: rowNumber, code: 'name' }); return }
-    if (!unit) { issues.push({ row: rowNumber, code: 'unit' }); return }
-    if (!numeric.test(opening) || !Number.isFinite(Number(opening))) { issues.push({ row: rowNumber, code: 'openingBalance' }); return }
+    for (const target of requiredFields) {
+      if (value(target)) continue
+      if (target === 'code' || target === 'name' || target === 'unit') issues.push({ row: rowNumber, code: target })
+      else issues.push({ row: rowNumber, code: 'required', field: target })
+      return
+    }
+    if (opening !== '' && (!numeric.test(opening) || !Number.isFinite(Number(opening)))) { issues.push({ row: rowNumber, code: 'openingBalance' }); return }
     const minimumStock = minimum === '' ? null : Number(minimum)
     if (minimum !== '' && (!numeric.test(minimum) || !Number.isFinite(minimumStock!) || minimumStock! < 0)) {
       issues.push({ row: rowNumber, code: 'minimumStock' }); return
@@ -96,15 +116,17 @@ export function buildPreview(table: ImportTable, targets: ImportTarget[], fields
       const customValue = value(target)
       if (!customValue) continue
       if (!isValidFieldValue(field.type, customValue)) {
-        issues.push({ row: rowNumber, code: field.type === 'number' ? 'customNumber' : 'customDate' })
+        issues.push({ row: rowNumber, code: field.type === 'number' ? 'customNumber' : 'customDate', field: target })
         return
       }
       customValues[field.id] = customValue
     }
-    const key = normalize(code)
-    if (existing.has(key)) { skipped += 1; return }
-    if (seen.has(key)) { issues.push({ row: rowNumber, code: 'duplicateCode' }); return }
-    seen.add(key)
+    const key = normalizeCode(code)
+    if (key) {
+      if (existing.has(key)) { existingRows.push(rowNumber); return }
+      if (seen.has(key)) { issues.push({ row: rowNumber, code: 'duplicateCode' }); return }
+      seen.add(key)
+    }
     items.push({
       id: crypto.randomUUID(),
       code, name, unit,
@@ -117,5 +139,5 @@ export function buildPreview(table: ImportTable, targets: ImportTarget[], fields
     })
   })
 
-  return { items, issues, skipped }
+  return { items, issues, skipped: existingRows.length, existingRows }
 }

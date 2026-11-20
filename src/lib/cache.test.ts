@@ -15,6 +15,14 @@ beforeEach(() => memory.clear())
 afterEach(() => memory.clear())
 
 describe('snapshot storage', () => {
+  it('preserves required field settings in offline copies', async () => {
+    const original = snapshot('a', '1')
+    original.data.requiredItemFields = ['name', 'unit', 'field:batch']
+    await saveSnapshot(original)
+    original.data.requiredItemFields.push('code')
+    expect((await listSnapshots())[0].data.requiredItemFields).toEqual(['name', 'unit', 'field:batch'])
+  })
+
   it('separates account/workbook choices and omits extra session fields', async () => {
     await saveSnapshot({ ...snapshot('a', '1'), accessToken: 'never-store' } as CachedSnapshot)
     await saveSnapshot(snapshot('a', '2'))

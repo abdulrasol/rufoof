@@ -1,7 +1,7 @@
 import { movementDelta } from './inventory'
-import { FieldValueError, isIsoDate, isValidFieldValue } from './fields'
+import { DEFAULT_REQUIRED_ITEM_FIELDS, FieldValueError, isIsoDate, isValidFieldValue, missingItemRequirements, validateItemRequirements } from './fields'
 import { REPAIRABLE_CORE, SchemaIssueError, WorkbookDataError } from './schema'
-import type { CustomField, FieldTarget, FieldType, GoogleSession, InventoryRepository, Item, Movement, WarehouseData, WorkbookRef } from './types'
+import type { CustomField, FieldTarget, FieldType, GoogleSession, InventoryRepository, Item, ItemRequirement, Movement, WarehouseData, WorkbookRef } from './types'
 
 export { WorkbookDataError } from './schema'
 
@@ -137,9 +137,9 @@ type CellValue = { stringValue?: string; numberValue?: number; boolValue?: boole
 type Cell = { userEnteredValue?: CellValue; effectiveValue?: CellValue }
 type Grid = { startRow?: number; startColumn?: number; rowData?: Array<{ values?: Cell[] }> }
 type Sheet = { properties: { sheetId: number; title: string; gridProperties?: { columnCount?: number } }; data?: Grid[] }
-type Metadata = { metadataKey: string; metadataValue?: string; location?: { dimensionRange?: { sheetId?: number; dimension?: string; startIndex?: number; endIndex?: number } } }
-type ColumnMeta = { v: 1; kind: 'core' | 'field'; id: string; name?: string; type?: FieldType }
-type Column = { index: number; meta: ColumnMeta; header: string }
+type Metadata = { metadataId?: number; metadataKey: string; metadataValue?: string; location?: { dimensionRange?: { sheetId?: number; dimension?: string; startIndex?: number; endIndex?: number } } }
+type ColumnMeta = { v: 1; kind: 'core' | 'field'; id: string; name?: string; type?: FieldType; required?: boolean }
+type Column = { index: number; meta: ColumnMeta; header: string; metadata?: { id?: number; value: string } }
 type Table = { sheet: Sheet; rows: Map<number, Map<number, Cell>>; columns: Column[]; core: Map<string, Column> }
 type State = { data: WarehouseData; tables: Record<FieldTarget, Table>; itemRows: Map<string, number> }
 
@@ -155,6 +155,16 @@ const CORE: Record<FieldTarget, Array<{ id: string; header: string }>> = {
     { id: 'kind', header: 'Kind' }, { id: 'quantity', header: 'Quantity' },
     { id: 'party', header: 'Party' }, { id: 'document', header: 'Document' }, { id: 'notes', header: 'Notes' },
   ],
+}
+
+function itemRequirement(column: Column): ItemRequirement | undefined {
+  if (column.meta.kind === 'field') return `field:${column.meta.id}`
+  return column.meta.id === 'id' ? undefined : column.meta.id as ItemRequirement
+}
+
+function columnIsRequired(column: Column): boolean {
+  const identity = itemRequirement(column)
+  return column.meta.required ?? (identity !== undefined && DEFAULT_REQUIRED_ITEM_FIELDS.includes(identity))
 }
 
 const normalized = (s: string) => s.trim().toLowerCase().replace(/[\s_-]+/gu, '')
@@ -240,6 +250,31 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
   const url = (id: string) => `${SHEETS}/${encodeURIComponent(id)}`
   const batch = (id: string, requests: unknown[]) => api<unknown>(`${url(id)}:batchUpdate`, { method: 'POST', body: JSON.stringify({ requests }) }, true)
 
+  async function updateColumnMetadata(id: string, changes: Array<{ column: Column; meta: ColumnMeta }>): Promise<void> {
+    if (!changes.length) return
+    const updates = changes.map(({ column, meta }) => {
+      const original = column.metadata
+      if (!original || !Number.isInteger(original.id) || original.id! < 0) throw new Error('Column metadata ID is missing or invalid; reload the ledger before editing.')
+      const value = JSON.stringify(meta)
+      return {
+        id: original.id!, value,
+        request: { updateDeveloperMetadata: {
+          dataFilters: [{ developerMetadataLookup: { metadataId: original.id, metadataValue: original.value } }],
+          developerMetadata: { metadataValue: value }, fields: 'metadataValue',
+        } },
+      }
+    })
+    if (new Set(updates.map(update => update.id)).size !== updates.length) throw new Error('Duplicate column metadata IDs; reload the ledger before editing.')
+    // ID and the exact old value narrow conflicts, but Sheets does not isolate concurrent collaborators.
+    const result = await batch(id, updates.map(update => update.request)) as {
+      replies?: Array<{ updateDeveloperMetadata?: { developerMetadata?: Metadata[] } }>
+    }
+    if (!Array.isArray(result?.replies) || result.replies.length !== updates.length || updates.some((update, index) => {
+      const matched = result.replies![index]?.updateDeveloperMetadata?.developerMetadata
+      return !Array.isArray(matched) || matched.length !== 1 || matched[0]?.metadataId !== update.id || matched[0]?.metadataValue !== update.value
+    })) throw new Error('Column metadata update was partial, conflicted, or uncertain. Reload the ledger and verify the settings before trying again.')
+  }
+
   async function readState(id: string, discover = true, classifyDataErrors = false): Promise<State> {
     const fields = 'sheets(properties(sheetId,title,gridProperties(columnCount)),data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue))))'
     const [spreadsheet, found] = await Promise.all([
@@ -277,7 +312,7 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
           if (value && seenHeaders.has(value)) throw new SchemaIssueError({ code: 'duplicateHeader', target, column: columnLetter(col), header: text(cell) })
           if (value) seenHeaders.add(value)
         }
-        const byIndex = new Map<number, ColumnMeta>()
+        const byIndex = new Map<number, { meta: ColumnMeta; metadata: Column['metadata'] }>()
         const columnName = (index: unknown) => typeof index === 'number' && Number.isInteger(index) && index >= 0 ? columnLetter(index) : undefined
         for (const match of found.matchedDeveloperMetadata || []) {
           const metadata = match.developerMetadata
@@ -290,16 +325,20 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
           try { meta = JSON.parse(metadata.metadataValue || '') as ColumnMeta } catch { throw new SchemaIssueError({ code: 'columnMetadata', target, column: columnName(index) }) }
           if (meta?.v !== 1 || typeof meta.id !== 'string' || !meta.id || (meta.kind !== 'core' && meta.kind !== 'field')) throw new SchemaIssueError({ code: 'columnMetadata', target, column: columnName(index) })
           if (meta.kind === 'core' && !CORE[target].some(core => core.id === meta.id)) throw new SchemaIssueError({ code: 'columnMetadata', target, column: columnName(index) })
-          if (meta.kind === 'field' && (!meta.name || !['text', 'number', 'date'].includes(meta.type || ''))) throw new SchemaIssueError({ code: 'columnMetadata', target, column: columnName(index) })
-          byIndex.set(index, meta)
+          if (meta.kind === 'field' && (typeof meta.name !== 'string' || !meta.name.trim() || !['text', 'number', 'date'].includes(meta.type || ''))) throw new SchemaIssueError({ code: 'columnMetadata', target, column: columnName(index) })
+          if ((Object.hasOwn(meta, 'required') && typeof meta.required !== 'boolean') ||
+            (target === 'items' && meta.kind === 'core' && ((meta.id === 'name' && meta.required === false) || (meta.id === 'id' && meta.required === true)))) {
+            throw new SchemaIssueError({ code: 'columnMetadata', target, column: columnName(index) })
+          }
+          byIndex.set(index, { meta, metadata: { id: metadata.metadataId, value: metadata.metadataValue! } })
         }
         const columns: Column[] = []
         const core = new Map<string, Column>()
         // Metadata always takes precedence over editable headers.
-        for (const [index, meta] of byIndex) {
+        for (const [index, { meta, metadata }] of byIndex) {
           const name = text(header.get(index)).trim()
           if (!name) throw new SchemaIssueError({ code: 'columnMetadata', target, column: columnName(index) })
-          const column = { index, meta, header: name }
+          const column = { index, meta, header: name, metadata }
           if (meta.kind === 'core') {
             if (core.has(meta.id)) throw new SchemaIssueError({ code: 'duplicateCore', target, column: columnName(index), coreId: meta.id })
             core.set(meta.id, column)
@@ -365,12 +404,17 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
     }
     blockedDiscoveries.delete(id)
     return validateWorkbookData(classifyDataErrors, () => {
-      const data: WarehouseData = { items: [], movements: [], fields: [] }
+      const data: WarehouseData = { items: [], movements: [], fields: [], requiredItemFields: [] }
       for (const target of ['items', 'movements'] as const) {
         for (const column of tables[target].columns) if (column.meta.kind === 'field') {
           data.fields.push({ id: column.meta.id, name: column.header, type: column.meta.type!, target })
         }
       }
+      for (const column of tables.items.columns) {
+        const identity = itemRequirement(column)
+        if (identity && columnIsRequired(column)) data.requiredItemFields!.push(identity)
+      }
+      validateItemRequirements(data.requiredItemFields!, data.fields)
       const itemRows = new Map<string, number>()
       const customFor = (table: Table, row: Map<number, Cell>) => Object.fromEntries(table.columns.filter(column => column.meta.kind === 'field').map(column => [column.meta.id, text(row.get(column.index))]))
       const get = (table: Table, row: Map<number, Cell>, key: string) => row.get(table.core.get(key)!.index)
@@ -415,6 +459,19 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
       }
       return { data, tables, itemRows }
     })
+  }
+
+  function checkRequirements(data: WarehouseData, expected?: readonly ItemRequirement[]): readonly ItemRequirement[] {
+    const required = data.requiredItemFields ?? DEFAULT_REQUIRED_ITEM_FIELDS
+    if (expected) {
+      const actualSet = new Set(required), expectedSet = new Set(expected)
+      if (actualSet.size !== expectedSet.size || [...expectedSet].some(field => !actualSet.has(field))) throw new Error('Required fields changed; reload the ledger')
+    }
+    return required
+  }
+
+  function checkRequiredItem(item: Item, required: readonly ItemRequirement[]): void {
+    if (missingItemRequirements(item, required).length) throw new Error('Required item fields are missing')
   }
 
   function rowValues(table: Table, values: Record<string, string | number | null>, custom: Record<string, string>): (string | number | null)[] {
@@ -485,10 +542,12 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
       baselines.set(id, structuredClone(data))
       return data
     },
-    async saveItem(id: string, item: Item) {
-      checkItem(item)
+    async saveItem(id: string, item: Item, expectedRequirements?: readonly ItemRequirement[]) {
       const state = await readState(id)
+      const required = checkRequirements(state.data, expectedRequirements)
+      checkItem(item)
       checkCustom(state.data.fields, 'items', item.custom)
+      checkRequiredItem(item, required)
       const table = state.tables.items
       const rowIndex = state.itemRows.get(item.id)
       if (rowIndex === undefined) {
@@ -524,23 +583,26 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
         if (column.meta.kind === 'core') Object.assign(next, { [column.meta.id]: after })
         else Object.defineProperty(next.custom, column.meta.id, { value: after, enumerable: true, writable: true, configurable: true })
       }
+      checkRequiredItem(next, required)
       if (changes.length) await api<unknown>(`${url(id)}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data: changes }) }, true)
       state.data.items = state.data.items.map(value => value.id === item.id ? next : value)
       baselines.set(id, structuredClone(state.data))
     },
-    async appendItems(id: string, items: Item[]) {
+    async appendItems(id: string, items: Item[], expectedRequirements?: readonly ItemRequirement[]) {
       if (!items.length) return
       const state = await readState(id)
-      const ids = new Set<string>()
-      const codes = new Set(state.data.items.map(item => normalized(item.code)))
+      const required = checkRequirements(state.data, expectedRequirements)
+      const ids = new Set(state.data.items.map(item => item.id))
+      const codes = new Set(state.data.items.map(item => item.code.trim().toLowerCase()).filter(Boolean))
       for (const item of items) {
         checkItem(item)
         checkCustom(state.data.fields, 'items', item.custom)
+        checkRequiredItem(item, required)
         if (ids.has(item.id)) throw new Error(`Duplicate item ID: ${item.id}`)
         ids.add(item.id)
-        const code = normalized(item.code)
-        if (!code || codes.has(code)) throw new Error(`Item code already exists: ${item.code}`)
-        codes.add(code)
+        const code = item.code.trim().toLowerCase()
+        if (code && codes.has(code)) throw new Error(`Item code already exists: ${item.code}`)
+        if (code) codes.add(code)
       }
       try {
         await append(id, state.tables.items, items.map(item => rowValues(state.tables.items, itemValues(item), item.custom)))
@@ -549,6 +611,18 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
         if (await verifyAppend(id, items, 'items')) return
         throw new Error('Item import outcome is uncertain or partial. Check the imported codes before retrying; concurrent writes may duplicate them.')
       }
+    },
+    async saveItemRequirements(id: string, required: ItemRequirement[], expectedRequirements?: readonly ItemRequirement[]) {
+      const state = await readState(id)
+      checkRequirements(state.data, expectedRequirements)
+      validateItemRequirements(required, state.data.fields)
+      const desired = new Set(required)
+      const changes = state.tables.items.columns.flatMap(column => {
+        const identity = itemRequirement(column)
+        if (!identity || columnIsRequired(column) === desired.has(identity)) return []
+        return [{ column, meta: { ...column.meta, required: desired.has(identity) } }]
+      })
+      await updateColumnMetadata(id, changes)
     },
     async appendMovements(id: string, movements: Movement[]) {
       if (!movements.length) return
@@ -609,22 +683,7 @@ export function googleRepository(session: GoogleSession): InventoryRepository {
         if (!isValidFieldValue(field.type, text(row.get(column.index)))) rows.push(index + 1)
       }
       if (rows.length) throw new FieldValueError(field.type, rows)
-      const meta: ColumnMeta = { v: 1, kind: 'field', id: field.id, name: current.name, type: field.type }
-      const request = {
-        updateDeveloperMetadata: {
-          dataFilters: [{ developerMetadataLookup: { metadataKey: META_KEY, location: { dimensionRange: { sheetId: table.sheet.properties.sheetId, dimension: 'COLUMNS', startIndex: column.index, endIndex: column.index + 1 } } } }],
-          developerMetadata: { metadataKey: META_KEY, metadataValue: JSON.stringify(meta) },
-          fields: 'metadataValue',
-        },
-      }
-      try { await batch(id, [request]) } catch (error) {
-        if (!(error instanceof ApiError) || !error.uncertain) throw error
-        try {
-          const verified = await readState(id, false)
-          if (verified.data.fields.some(value => value.id === field.id && value.type === field.type && value.target === field.target)) return
-        } catch { /* Do not retry an uncertain write. */ }
-        throw new Error('Custom field update outcome is uncertain. Reload the ledger and check it before trying again.')
-      }
+      await updateColumnMetadata(id, [{ column, meta: { ...column.meta, type: field.type } }])
       const baseline = baselines.get(id)?.fields.find(value => value.id === field.id)
       if (baseline) baseline.type = field.type
     },

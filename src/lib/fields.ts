@@ -1,4 +1,21 @@
-import type { FieldType } from './types'
+import type { CustomField, FieldType, Item, ItemRequirement } from './types'
+
+export const DEFAULT_REQUIRED_ITEM_FIELDS: readonly ItemRequirement[] = ['name', 'openingBalance']
+const ITEM_CORE_FIELDS: readonly ItemRequirement[] = ['code', 'name', 'unit', 'openingBalance', 'category', 'minimumStock', 'location', 'notes']
+
+export function validateItemRequirements(required: readonly ItemRequirement[], fields: readonly CustomField[]): void {
+  const allowed = new Set<ItemRequirement>([...ITEM_CORE_FIELDS, ...fields.filter(field => field.target === 'items').map((field): ItemRequirement => `field:${field.id}`)])
+  if (!required.includes('name') || new Set(required).size !== required.length || required.some(field => !allowed.has(field))) throw new Error('Invalid required item fields')
+}
+
+export function missingItemRequirements(item: Item, required: readonly ItemRequirement[]): ItemRequirement[] {
+  return required.filter(field => {
+    if (field === 'openingBalance') return !Number.isFinite(item.openingBalance)
+    if (field === 'minimumStock') return item.minimumStock === null
+    if (field.startsWith('field:')) return !(item.custom[field.slice(6)] ?? '').trim()
+    return !String(item[field as Exclude<ItemRequirement, `field:${string}`>]).trim()
+  })
+}
 
 const numeric = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/iu
 

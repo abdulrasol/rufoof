@@ -22,6 +22,7 @@ export async function saveSnapshot(snapshot: CachedSnapshot): Promise<void> {
     savedAt: snapshot.savedAt,
     data: {
       fields: snapshot.data.fields.map(({ id, name, type, target }) => ({ id, name, type, target })),
+      requiredItemFields: snapshot.data.requiredItemFields?.slice(),
       items: snapshot.data.items.map(({ id, code, name, unit, openingBalance, category, minimumStock, location, notes, custom }) =>
         ({ id, code, name, unit, openingBalance, category, minimumStock, location, notes, custom: { ...custom } })),
       movements: snapshot.data.movements.map(({ id, itemId, date, kind, quantity, party, document, notes, custom }) =>

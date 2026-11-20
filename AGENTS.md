@@ -1,7 +1,7 @@
 # تعليمات الوكلاء
 
 - حافظ على خصوصية المستخدم: اطلب أقل صلاحيات Google، ولا تحفظ رموز الوصول في التخزين الدائم، ولا تضمّن أسراراً في المستودع.
-- الهوية عبر SubulTech: بعد Google استدعِ `/v1/auth/google` ثم استخدم رموز الجلسة، وثبّت `application_slug` على `rafuf` بلا قيمة من المستخدم. تبقى رموز Google ورموز SubulTech (access وrefresh) في الذاكرة فقط وتُمسح عند الخروج.
+- الهوية عبر SubulTech: بعد Google استدعِ `/v1/auth/google` ثم استخدم رموز الجلسة، وثبّت `application_slug` على `rufoof` بلا قيمة من المستخدم. تبقى رموز Google ورموز SubulTech (access وrefresh) في الذاكرة فقط وتُمسح عند الخروج.
 - اقرأ `VITE_GOOGLE_CLIENT_ID` و`VITE_SUBULTECH_API_BASE_URL` و`VITE_SUBULTECH_APPLICATION_SLUG` من البيئة؛ لا تضع client secret في المتصفح أو المستودع، ولا تعدّل مشروع Worker الخاص بـ SubulTech من هذا المستودع.
 - حافظ على العربية والإنجليزية واختيار اللغة واتجاهي RTL وLTR في كل واجهة جديدة.
 - احسب الرصيد من السجل الصحيح، ولا تدّعِ أن Google Sheets يوفر معاملات ذرية أو حماية من التعديل المباشر.
