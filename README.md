@@ -4,13 +4,23 @@
 
 Open-source inventory management using your own Google Sheets, with Arabic and English, stock movements, stock counts, custom fields, and an installable web app.
 
-**تم تنفيذ هذا التطبيق باستخدام الذكاء الاصطناعي. | Built with AI.**
+**© Subul Technology / سبل للتكنولوجيا — Rafuf (Rufoof).**
 
 ## النسبة وإعادة الاستخدام | Attribution and reuse
 
 هذا المشروع مفتوح المصدر ومرخّص بموجب MIT. عند إعادة نشره أو تعديل أجزاء جوهرية منه، يجب إبقاء ملفي `LICENSE` و`NOTICE` وإشعار حقوق النشر، ويُطلب إبقاء نسبة واضحة إلى **AbdulRasol Al-Hilo / Subul Technology** مع الإشارة إلى أن المشروع الأصلي هو **Rafuf (Rufoof)**. تم بناء المشروع بمساعدة أدوات الذكاء الاصطناعي وتحت توجيه ومراجعة المطوّر.
 
-This project is open source under the MIT License. When redistributing it or publishing a substantial derivative, retain `LICENSE`, `NOTICE`, and the copyright notice. Please provide clear attribution to **AbdulRasol Al-Hilo / Subul Technology** and identify the original project as **Rafuf (Rufoof)**. The project was built with AI assistance under the developer’s direction and review.
+This project is open source under the MIT License. When redistributing it or publishing a substantial derivative, retain `LICENSE`, `NOTICE`, and the copyright notice. Please provide clear attribution to **AbdulRasol Al-Hilo / Subul Technology** and identify the original project as **Rafuf (Rufoof)**.
+
+## Data ownership and plans
+
+المستخدم يملك بياناته وملفات Google Sheets الخاصة به. Rafuf لا يطّلع على محتوى الجداول ولا ينسخها إلى خوادم SubulTech؛ يتعامل المتصفح معها مباشرة عبر Google وبصلاحية `drive.file`. تُستخدم هوية SubulTech فقط للحساب، تفعيل التطبيق، حفظ مرجع الملف، والإحصاءات التشغيلية غير المتعلقة بمحتوى المخزون.
+
+The user owns their inventory and Google Sheets files. Rafuf does not inspect or copy spreadsheet contents to SubulTech servers; the browser accesses them directly through Google with the limited `drive.file` scope. SubulTech Identity is used for account identity, app activation, workbook reference, and operational usage metrics—not inventory contents.
+
+الخطة المجانية مناسبة لسجل واحد وحدود الاستخدام الأساسية. يمكن لاحقاً تفعيل خطة مدفوعة لعدة سجلات، حدود أكبر، وميزات متقدمة؛ لا تُعد هذه الحدود مفعّلة في النسخة الحالية إلا إذا ظهرت في حساب SubulTech.
+
+The free plan is intended for one ledger and basic usage. A paid plan can later provide multiple ledgers, higher limits, and advanced features; these limits are not active in this release unless shown by SubulTech.
 
 ## التشغيل | Development
 
