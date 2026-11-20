@@ -24,7 +24,7 @@ const en = {
   register: 'MATERIALS REGISTER', recentActivity: 'RECENT ACTIVITY', viewAll: 'View all', currentBalance: 'Balance', minimum: 'Minimum',
   material: 'Material', code: 'Code', name: 'Name', unit: 'Unit', category: 'Category', location: 'Location', notes: 'Notes',
   openingBalance: 'Opening balance', openingLocked: 'Opening balance is fixed after creation. Use a stock count to record an adjustment.', minimumStock: 'Minimum stock', customDetails: 'Additional details',
-  negativeStock: 'This issue will leave a negative balance. I understand and want to record it.', builtWithAI: '© Subul Technology · Rafuf', fieldVisible: 'Show in table', fromDate: 'From date', toDate: 'To date',
+  negativeStock: 'This issue will leave a negative balance. I understand and want to record it.', builtWithAI: '© Subul Technology · Rufoof', fieldVisible: 'Show in table', fromDate: 'From date', toDate: 'To date',
   status: 'Status', healthy: 'In stock', low: 'Low stock', noMinimum: 'No minimum',
   searchMaterials: 'Search by name, code, category or location', searchMovements: 'Search movements', search: 'Search',
   allCategories: 'All categories', allStatuses: 'All stock levels', allKinds: 'All movement types',
