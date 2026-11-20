@@ -65,7 +65,7 @@ export function mappingProblems(targets: ImportTarget[]): { missing: CoreImport[
 export function buildPreview(table: ImportTable, targets: ImportTarget[], fields: CustomField[], existingCodes: string[]): ImportPreview {
   const columns = new Map<ImportTarget, number>()
   targets.forEach((target, index) => { if (target && !columns.has(target)) columns.set(target, index) })
-  const custom = new Map(fields.filter(field => field.target === 'items').map(field => [`field:${field.id}`, field]))
+  const custom = new Map<`field:${string}`, CustomField>(fields.filter(field => field.target === 'items').map(field => [`field:${field.id}`, field] as const))
   const existing = new Set(existingCodes.map(normalize))
   const seen = new Set<string>()
   const items: Item[] = []

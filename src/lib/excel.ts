@@ -18,6 +18,8 @@ export interface ExportLabels {
   quantity: string
   party: string
   document: string
+  sheetItems: string
+  sheetMovements: string
   kinds: Record<MovementKind, string>
 }
 
@@ -45,7 +47,7 @@ export function buildExportSheets(data: WarehouseData, labels: ExportLabels): Ex
   ]
   return [
     {
-      name: labels.material,
+      name: labels.sheetItems,
       headers: [labels.code, labels.name, labels.unit, labels.openingBalance, labels.currentBalance, labels.category, labels.minimumStock, labels.location, labels.notes, ...itemCustom.map(field => field.name)],
       widths: [14, 28, 10, 14, 14, 16, 14, 16, 30, ...itemCustom.map(() => 18)],
       rows: data.items.map(item => [
@@ -55,7 +57,7 @@ export function buildExportSheets(data: WarehouseData, labels: ExportLabels): Ex
       ]),
     },
     {
-      name: labels.type,
+      name: labels.sheetMovements,
       headers: [labels.date, labels.material, labels.code, labels.type, labels.quantity, labels.party, labels.document, labels.notes, ...movementCustom.map(field => field.name)],
       widths: [13, 28, 14, 12, 12, 20, 20, 30, ...movementCustom.map(() => 18)],
       rows: data.movements.map(movement => {

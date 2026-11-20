@@ -143,6 +143,75 @@ function FieldEditor({ field, t, disabled, busy, notice, onSave, onClose }: { fi
   return <form onSubmit={submit}><div className="modal-body">{notice}{field && <p className="form-intro">{t('fieldEditHint')}</p>}<div className="form-grid"><FormField label={t('fieldName')} wide><input required readOnly={!!field} value={name} onChange={(e) => setName(e.target.value)} /></FormField><FormField label={t('fieldType')} hint={field ? t('fieldTypeHint') : undefined}><select value={type} onChange={(e) => setType(e.target.value as FieldType)}><option value="text">{t('text')}</option><option value="number">{t('number')}</option><option value="date">{t('dateField')}</option></select></FormField><FormField label={t('fieldTarget')}><select disabled={!!field} value={target} onChange={(e) => setTarget(e.target.value as FieldTarget)}><option value="items">{t('materials')}</option><option value="movements">{t('movements')}</option></select></FormField></div></div><div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>{t('cancel')}</button><button className="button primary" disabled={disabled}>{busy ? t('saving') : field ? t('save') : t('addField')}</button></div></form>
 }
 
+function ImportDialog({ existingCodes, fields, t, language, busy, notice, onImport, onClose }: { existingCodes: string[]; fields: CustomField[]; t: Translate; language: Language; busy: boolean; notice: ReactNode; onImport: (items: Item[]) => Promise<boolean>; onClose: () => void }) {
+  const [sheets, setSheets] = useState<ImportSheet[]>([])
+  const [sheetIndex, setSheetIndex] = useState(0)
+  const [table, setTable] = useState<ImportTable | null>(null)
+  const [targets, setTargets] = useState<ImportTarget[]>([])
+  const [fileError, setFileError] = useState<MessageKey | null>(null)
+  const [reading, setReading] = useState(false)
+  const picker = useRef<HTMLInputElement>(null)
+  const itemFields = fields.filter((field) => field.target === 'items')
+  const problems = table ? mappingProblems(targets) : null
+  const preview = useMemo(() => {
+    if (!table) return null
+    const check = mappingProblems(targets)
+    if (check.missing.length || check.duplicate.length) return null
+    return buildPreview(table, targets, fields, existingCodes)
+  }, [table, targets, fields, existingCodes])
+  const useTable = (next: ImportTable) => { setTable(next); setTargets(suggestTargets(next.headers, fields)); setFileError(null) }
+  const loadFile = async (file: File | undefined) => {
+    if (!file) return
+    setReading(true); setFileError(null)
+    try {
+      const loaded = await readSpreadsheet(file)
+      setSheets(loaded); setSheetIndex(0)
+      useTable(toTable(loaded[0]))
+    } catch (cause) {
+      setSheets([]); setTable(null); setTargets([])
+      const map = { unsupported: 'importUnsupported', empty: 'importEmpty', tooLarge: 'importTooLarge', unreadable: 'importReadError' } as const
+      setFileError(cause instanceof SpreadsheetError ? map[cause.code] : 'importReadError')
+    } finally { setReading(false); if (picker.current) picker.current.value = '' }
+  }
+  const chooseSheet = (index: number) => {
+    setSheetIndex(index)
+    try { useTable(toTable(sheets[index])) } catch { setTable(null); setTargets([]); setFileError('importEmpty') }
+  }
+  const sample = (index: number) => table?.rows.map((row) => row[index] ?? '').find((value) => value !== '') ?? ''
+  return <>
+    <div className="modal-body">
+      {notice}
+      <p className="form-intro">{t('importHint')}</p>
+      <div className="import-file">
+        <input ref={picker} className="sr-only" type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => void loadFile(event.target.files?.[0])} />
+        <button type="button" className="button secondary" disabled={reading || busy} onClick={() => picker.current?.click()}><Upload size={16} />{reading ? t('loading') : t('importChooseFile')}</button>
+        {sheets.length > 1 ? <label className="import-sheet"><span>{t('importSheet')}</span><select value={sheetIndex} onChange={(event) => chooseSheet(Number(event.target.value))}>{sheets.map((sheet, index) => <option key={`${sheet.name}-${index}`} value={index}>{sheet.name}</option>)}</select></label>
+          : sheets.length === 1 ? <span className="import-file-name" dir="auto">{sheets[0].name}</span> : <span className="muted">{t('importNoFile')}</span>}
+      </div>
+      {fileError && <div className="message error" role="alert"><AlertCircle size={17} /><span>{t(fileError)}</span></div>}
+      {table && problems && <>
+        {(problems.missing.length > 0 || problems.duplicate.length > 0) && <div className="message warning" role="alert"><AlertCircle size={17} /><span>{problems.missing.length ? `${t('importMissingFields')}: ${problems.missing.map((target) => t(coreImportKeys[target])).join(', ')}` : t('importDuplicateMapping')}</span></div>}
+        <div className="import-map">{table.headers.map((header, index) => <div className="import-row" key={`${header}-${index}`}>
+          <div className="import-source"><strong dir="auto">{header || `${t('importColumn')} ${index + 1}`}</strong>{sample(index) && <small dir="auto">{sample(index).slice(0, 60)}</small>}</div>
+          <ArrowRight size={15} className="import-arrow" />
+          <label className="import-target"><span className="sr-only">{t('importTarget')}</span><select value={targets[index] ?? ''} onChange={(event) => setTargets((current) => current.map((target, position) => position === index ? event.target.value as ImportTarget : target))}><option value="">{t('importIgnore')}</option>{CORE_IMPORTS.map((target) => <option key={target} value={target}>{t(coreImportKeys[target])}</option>)}{itemFields.map((field) => <option key={field.id} value={`field:${field.id}`}>{field.name}</option>)}</select></label>
+        </div>)}</div>
+        {preview && <>
+          <p className="import-summary"><strong>{numberText(preview.items.length, language)}</strong> {t('importReady')} <span>·</span> <strong>{numberText(preview.skipped, language)}</strong> {t('importSkipped')}{preview.issues.length > 0 && <> <span>·</span> <strong>{numberText(preview.issues.length, language)}</strong> {t('importIssues')}</>}</p>
+          {preview.items.length > 0 && <div className="table-scroll import-preview"><table><thead><tr><th>{t('code')}</th><th>{t('name')}</th><th>{t('unit')}</th><th className="number-cell">{t('openingBalance')}</th></tr></thead><tbody>{preview.items.slice(0, 6).map((item) => <tr key={item.id}><td><span className="code">{item.code}</span></td><td>{item.name}</td><td>{item.unit}</td><td className="number-cell">{numberText(item.openingBalance, language)}</td></tr>)}</tbody></table></div>}
+          {preview.issues.length > 0 && <ul className="import-issues">{preview.issues.slice(0, 12).map((issue) => <li key={`${issue.row}-${issue.code}`}>{t('schemaRowLabel')} {issue.row} · {t(importIssueKeys[issue.code])}</li>)}{preview.issues.length > 12 && <li>+{preview.issues.length - 12}</li>}</ul>}
+          {preview.issues.length > 0 && <p className="form-hint">{t('importIssuesNote')}</p>}
+          <p className="form-hint">{t('importExistingNote')}</p>
+        </>}
+      </>}
+    </div>
+    <div className="modal-actions">
+      <button type="button" className="button secondary" onClick={onClose}>{t('cancel')}</button>
+      <button type="button" className="button primary" disabled={busy || reading || !preview || preview.items.length === 0} onClick={() => { if (preview) void onImport(preview.items) }}>{busy ? t('saving') : t('importConfirm')}</button>
+    </div>
+  </>
+}
+
 function SchemaIssuePanel({ issue, t, busy, canRepair, onRepair, onReload }: { issue: SchemaIssue; t: Translate; busy: boolean; canRepair: boolean; onRepair: () => void; onReload: () => void }) {
   const [confirming, setConfirming] = useState(false)
   const repairable = isRepairableIssue(issue)
