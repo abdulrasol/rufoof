@@ -60,7 +60,7 @@ const unauthorized = (error: unknown) => {
 const loadFailure = (error: unknown): MessageKey => unauthorized(error) ? 'sessionError' : error instanceof WorkbookDataError ? 'workbookDataError' : error instanceof WorkbookDiscoveryError ? 'discoveryError' : 'loadError'
 
 function Brand({ t }: { t: Translate }) {
-  return <div className="brand"><img src="/brand.svg" alt={`${t('appName')} — ${t('ledger')}`} style={{ display: 'block', width: '188px', maxWidth: '100%', height: 'auto' }} /></div>
+  return <div className="brand"><a href="https://subultech.top" target="_blank" rel="noreferrer" aria-label="Subul Technology"><img src="/brand.svg" alt={`${t('appName')} — ${t('ledger')}`} style={{ display: 'block', width: '188px', maxWidth: '100%', height: 'auto' }} /></a></div>
 }
 
 function Modal({ title, closeLabel, onClose, children }: { title: string; closeLabel: string; onClose: () => void; children: ReactNode }) {
@@ -380,6 +380,7 @@ export default function App() {
       const nextIdentity = await exchangeGoogleToken(nextSession.accessToken)
       const run = ++identityRun.current
       setIdentity(nextIdentity)
+      if (isRememberEnabled()) saveIdentity(nextIdentity)
       void verifyAccess(nextIdentity, run)
       const nextRepo = googleRepository(nextSession)
       if (reconnect && workbook) {
@@ -409,10 +410,15 @@ export default function App() {
     } finally { finish() }
   }
   useEffect(() => {
-    if (!loadIdentity()) return
+    const savedIdentity = loadIdentity()
+    if (!savedIdentity) return
     let cancelled = false
     const restore = async () => {
       try {
+        const renewedIdentity = await refreshSubultechSession({ accessToken: '', refreshToken: savedIdentity.refreshToken, user: savedIdentity.user })
+        if (cancelled) return
+        setIdentity(renewedIdentity)
+        if (isRememberEnabled()) saveIdentity(renewedIdentity)
         const googleSession = await authorizeGoogleSilently()
         const nextIdentity = await exchangeGoogleToken(googleSession.accessToken)
         const nextRepo = googleRepository(googleSession)
@@ -432,7 +438,7 @@ export default function App() {
           setWorkbook(selected); setData(loaded); setWorkbooks(null); await storeSnapshot(googleSession, selected, loaded)
         } else setWorkbooks(ordered)
       } catch {
-        if (!cancelled) { setMode(null); setIdentity(null) }
+        if (!cancelled) { setMode(null); setWorkbooks(null) }
       } finally { if (!cancelled) setRestoring(false) }
     }
     void restore()
@@ -456,6 +462,7 @@ export default function App() {
     try {
       const loaded = await repo.loadWorkbook(ref.id)
       setWorkbook(ref); setData(loaded); setWorkbooks(null); resetWorkspaceView(); setNeedsRefresh(false); setNeedsFreshLoad(false); setPendingCheck(null); setSchemaIssue(null)
+      if (mode === 'google' && session) saveLastWorkbook({ accountId: session.accountId, email: session.email, workbook: ref })
       await storeSnapshot(session, ref, loaded)
       if (identity) await saveWorkbookReference(identity, ref, true).catch(() => undefined)
     } catch (cause) { reportLoadFailure(cause) } finally { finish() }
@@ -468,6 +475,7 @@ export default function App() {
       const ref = await repo.createWorkbook(workbookName.trim())
       const loaded = await repo.loadWorkbook(ref.id)
       setWorkbook(ref); setData(loaded); setWorkbooks(null); setWorkbookName(''); resetWorkspaceView(); setNeedsRefresh(false); setNeedsFreshLoad(false); setPendingCheck(null); setSchemaIssue(null)
+      if (mode === 'google' && session) saveLastWorkbook({ accountId: session.accountId, email: session.email, workbook: ref })
       await storeSnapshot(session, ref, loaded)
       if (identity) await saveWorkbookReference(identity, ref, true).catch(() => undefined)
     } catch (cause) { if (unauthorized(cause)) setAuthRequired(true); setError('writeError'); setNeedsRefresh(true) } finally { finish() }
@@ -536,6 +544,7 @@ export default function App() {
     if (!start()) return
     try {
       identityRun.current++
+      clearIdentity()
       if (identity) void logoutSubultechSession(identity).catch(() => { /* Local sign-out continues if the session already expired. */ })
       if (accountId) await clearSnapshots(accountId)
       setMode(null); setSession(null); setIdentity(null); setAppAccess(null); setRepo(null); setWorkbook(null); setWorkbooks(null); setData(emptyData); setAccountId(''); setEmail(''); setDialog(null); setAuthRequired(false); setNeedsRefresh(false); setNeedsFreshLoad(false); setPendingCheck(null); setSchemaIssue(null); resetWorkspaceView()
