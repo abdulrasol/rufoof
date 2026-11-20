@@ -1,6 +1,5 @@
 # Rufoof
 
-
 Rufoof is an open-source and free inventory ledger built with React and Google Sheets. It supports Arabic and English, stock movements, stock counts, custom fields, Excel import/export, PDF printing, and installation as a web app.
 
 ## Attribution and license
