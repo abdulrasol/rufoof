@@ -11,10 +11,11 @@ const META_KEY = 'rufoof.column'
 
 type TokenResponse = { access_token?: string; expires_in?: number; error?: string; error_description?: string }
 type Gis = { accounts: { oauth2: { initTokenClient: (options: {
-  client_id: string; scope: string; prompt?: string; callback: (response: TokenResponse) => void
+  client_id: string; scope: string; prompt?: string; login_hint?: string; callback: (response: TokenResponse) => void
   error_callback: (error: { type?: string; message?: string }) => void
 }) => { requestAccessToken: () => void } } } }
 const SILENT_TIMEOUT_MS = 10_000
+const OAUTH_STATE_KEY = 'rufoof-google-oauth-state'
 let gisLoading: Promise<Gis> | undefined
 
 function loadGis(): Promise<Gis> {
@@ -43,7 +44,7 @@ function requireGesture(): void {
   }
 }
 
-async function requestSession(interactive: boolean): Promise<GoogleSession> {
+async function requestSession(interactive: boolean, loginHint?: string): Promise<GoogleSession> {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
   if (!clientId) throw new Error('Set VITE_GOOGLE_CLIENT_ID to sign in with Google')
   const google = await loadGis()
@@ -57,6 +58,7 @@ async function requestSession(interactive: boolean): Promise<GoogleSession> {
       client_id: clientId,
       scope: SCOPE,
       prompt: interactive ? '' : 'none',
+      ...(loginHint ? { login_hint: loginHint } : {}),
       callback: response => settle(() => resolve(response)),
       error_callback: error => settle(() => reject(new Error(`Google sign-in failed: ${error.message || error.type || 'popup closed'}`))),
     })
@@ -80,10 +82,32 @@ export async function authorizeGoogle(): Promise<GoogleSession> {
   return requestSession(true)
 }
 
+export function beginGoogleAuthorization(): void {
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
+  if (!clientId) throw new Error('Set VITE_GOOGLE_CLIENT_ID to sign in with Google')
+  const redirectUri = import.meta.env.VITE_GOOGLE_REDIRECT_URI || `${window.location.origin}/auth/google/callback`
+  const state = crypto.randomUUID()
+  sessionStorage.setItem(OAUTH_STATE_KEY, state)
+  const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', scope: SCOPE, state })
+  window.location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+}
+
+export function consumeGoogleAuthorizationCallback(): { code: string; redirectUri: string } | null {
+  const url = new URL(window.location.href)
+  const code = url.searchParams.get('code')
+  const state = url.searchParams.get('state')
+  if (!code && !url.searchParams.get('error')) return null
+  if (url.searchParams.get('error')) throw new Error(`Google sign-in failed: ${url.searchParams.get('error_description') || url.searchParams.get('error')}`)
+  if (!code || !state || state !== sessionStorage.getItem(OAUTH_STATE_KEY)) throw new Error('Google authorization response could not be verified')
+  sessionStorage.removeItem(OAUTH_STATE_KEY)
+  window.history.replaceState({}, document.title, `/${url.hash}`)
+  return { code, redirectUri: import.meta.env.VITE_GOOGLE_REDIRECT_URI || `${window.location.origin}/auth/google/callback` }
+}
+
 // Best-effort restore without a click. Browsers may require user activation, so callers
 // must fall back to the interactive flow when this rejects.
-export async function authorizeGoogleSilently(): Promise<GoogleSession> {
-  return requestSession(false)
+export async function authorizeGoogleSilently(loginHint?: string): Promise<GoogleSession> {
+  return requestSession(false, loginHint)
 }
 
 class ApiError extends Error {

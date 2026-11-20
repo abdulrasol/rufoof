@@ -3,7 +3,7 @@ import { exchangeGoogleToken, fetchApplicationAccess, logoutSubultechSession, re
 import type { SubultechSession } from './subultech'
 
 const base = 'https://api.test'
-const user = { id: 'usr_1', email: 'a@example.com', display_name: 'A Name', avatar_url: 'https://img/avatar', country: 'iq', city: 'Baghdad', auto_assigned_applications: ['rafuf'] }
+const user = { id: 'usr_1', email: 'a@example.com', display_name: 'A Name', avatar_url: 'https://img/avatar', country: 'iq', city: 'Baghdad', auto_assigned_applications: ['rufoof'] }
 const session: SubultechSession = { accessToken: 'access-1', refreshToken: 'refresh-1', user: { id: 'usr_1', email: 'a@example.com', displayName: 'A Name', avatarUrl: 'https://img/avatar', country: 'iq', city: 'Baghdad' } }
 const envelope = (data: unknown, code = 'OK') => ({ success: true, code, message: null, data, errors: [], request_id: 'req_1' })
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
@@ -16,7 +16,7 @@ const header = (init: RequestInit, name: string) => new Headers(init.headers).ge
 
 beforeEach(() => {
   vi.stubEnv('VITE_SUBULTECH_API_BASE_URL', base)
-  vi.stubEnv('VITE_SUBULTECH_APPLICATION_SLUG', 'rafuf')
+  vi.stubEnv('VITE_SUBULTECH_APPLICATION_SLUG', 'rufoof')
 })
 
 afterEach(() => {
@@ -30,7 +30,7 @@ describe('SubulTech identity', () => {
       expect(url).toBe(`${base}/v1/auth/google`)
       expect(init.method).toBe('POST')
       expect(header(init, 'Authorization')).toBeNull()
-      expect(JSON.parse(String(init.body))).toEqual({ access_token: 'google-token', application_slug: 'rafuf', country: null, city: null })
+      expect(JSON.parse(String(init.body))).toEqual({ access_token: 'google-token', application_slug: 'rufoof', country: null, city: null })
       return json(envelope({ access_token: 'access-1', refresh_token: 'refresh-1', user }))
     })
     const result = await exchangeGoogleToken('google-token')
@@ -73,10 +73,10 @@ describe('SubulTech identity', () => {
 
   it('checks the Rufoof plan with the SubulTech bearer token', async () => {
     mockFetch((url, init) => {
-      expect(url).toBe(`${base}/v1/apps/rafuf/access`)
+      expect(url).toBe(`${base}/v1/apps/rufoof/access`)
       expect(init.method).toBe('GET')
       expect(header(init, 'Authorization')).toBe('Bearer access-1')
-      return json(envelope({ application: { slug: 'rafuf' }, allowed: true, subscription: { plan: 'free' } }))
+      return json(envelope({ application: { slug: 'rufoof' }, allowed: true, subscription: { plan: 'free' } }))
     })
     await expect(fetchApplicationAccess(session)).resolves.toEqual({ allowed: true, subscription: { plan: 'free' } })
   })

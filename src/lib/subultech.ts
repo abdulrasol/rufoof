@@ -1,4 +1,4 @@
-const DEFAULT_SLUG = 'rafuf'
+const DEFAULT_SLUG = 'rufoof'
 
 export interface SubultechUser {
   id: string
@@ -106,16 +106,52 @@ export async function exchangeGoogleToken(googleAccessToken: string, location: {
   return parseSession(data)
 }
 
-export async function refreshSubultechSession(session: SubultechSession): Promise<SubultechSession> {
-  const data = await call<unknown>('/v1/auth/refresh', {
+export async function exchangeGoogleAuthorizationCode(code: string, redirectUri: string, location: { country?: string | null; city?: string | null } = {}): Promise<SubultechSession> {
+  const { slug } = settings()
+  const data = await call<unknown>('/v1/auth/google/code', {
     method: 'POST',
-    body: JSON.stringify({ refresh_token: session.refreshToken }),
+    body: JSON.stringify({ code, redirect_uri: redirectUri, application_slug: slug, country: location.country || null, city: location.city || null }),
   })
-  return parseSession(data, session)
+  return parseSession(data)
+}
+
+export async function refreshSubultechSession(session: SubultechSession): Promise<SubultechSession> {
+  // React StrictMode can start the restore effect twice in development. The
+  // refresh endpoint rotates tokens, so concurrent calls with the same token
+  // would make the second call fail with 401. Share the in-flight rotation.
+  if (sessionRefreshPromise) return sessionRefreshPromise
+  sessionRefreshPromise = (async () => {
+    const data = await call<unknown>('/v1/auth/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: session.refreshToken }),
+    })
+    return parseSession(data, session)
+  })()
+  try {
+    return await sessionRefreshPromise
+  } finally {
+    sessionRefreshPromise = null
+  }
+}
+
+let sessionRefreshPromise: Promise<SubultechSession> | null = null
+
+export async function refreshGoogleAccessToken(session: SubultechSession): Promise<{ accessToken: string; expiresAt: number; accountId: string; email: string; name: string }> {
+  const { slug } = settings()
+  const data = await call<{ access_token?: unknown; expires_in?: unknown; account_id?: unknown }>('/v1/auth/google/refresh', {
+    method: 'POST', body: JSON.stringify({ application_slug: slug }),
+  }, session.accessToken)
+  if (typeof data.access_token !== 'string' || !data.access_token || typeof data.account_id !== 'string' || !data.account_id) throw new SubultechError('SUBULTECH_INVALID_RESPONSE')
+  const expiresIn = typeof data.expires_in === 'number' && data.expires_in > 0 ? data.expires_in : 3600
+  return { accessToken: data.access_token, expiresAt: Date.now() + expiresIn * 1000, accountId: data.account_id, email: session.user.email, name: session.user.displayName || session.user.email }
 }
 
 export async function logoutSubultechSession(session: SubultechSession): Promise<void> {
   await call<unknown>('/v1/auth/logout', { method: 'POST' }, session.accessToken)
+}
+
+export async function deleteSubultechAccount(session: SubultechSession): Promise<void> {
+  await call<unknown>('/v1/me', { method: 'DELETE' }, session.accessToken)
 }
 
 export async function fetchApplicationAccess(session: SubultechSession): Promise<ApplicationAccess> {

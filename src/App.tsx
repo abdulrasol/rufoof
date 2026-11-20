@@ -6,8 +6,8 @@ import {
   Languages, Layers3, LayoutDashboard, LogOut, Package, Pencil, Plus, Printer, RefreshCw,
   Search, Settings, ShieldCheck, SlidersHorizontal, Smartphone, Upload, X,
 } from 'lucide-react'
-import { authorizeGoogle, authorizeGoogleSilently, googleRepository, WorkbookDataError, WorkbookDiscoveryError } from './lib/google'
-import { exchangeGoogleToken, fetchApplicationAccess, listSavedWorkbooks, logoutSubultechSession, refreshSubultechSession, saveWorkbookReference, SubultechError } from './lib/subultech'
+import { authorizeGoogle, authorizeGoogleSilently, beginGoogleAuthorization, consumeGoogleAuthorizationCallback, googleRepository, WorkbookDataError, WorkbookDiscoveryError } from './lib/google'
+import { deleteSubultechAccount, exchangeGoogleAuthorizationCode, exchangeGoogleToken, fetchApplicationAccess, listSavedWorkbooks, logoutSubultechSession, refreshGoogleAccessToken, refreshSubultechSession, saveWorkbookReference, SubultechError } from './lib/subultech'
 import type { ApplicationAccess, SubultechSession } from './lib/subultech'
 import { createDemoRepository } from './lib/demo'
 import { clearSnapshots, listSnapshots, saveSnapshot } from './lib/cache'
@@ -375,27 +375,8 @@ export default function App() {
     if (!start()) return
     setAppAccess(null)
     try {
-      const nextSession = await authorizeGoogle()
-      if (reconnect && accountId && nextSession.accountId !== accountId) { setError('accountMismatch'); return }
-      const nextIdentity = await exchangeGoogleToken(nextSession.accessToken)
-      const run = ++identityRun.current
-      setIdentity(nextIdentity)
-      if (isRememberEnabled()) saveIdentity(nextIdentity)
-      void verifyAccess(nextIdentity, run)
-      const nextRepo = googleRepository(nextSession)
-      if (reconnect && workbook) {
-        setSession(nextSession); setRepo(nextRepo); setMode('google'); setAuthRequired(false)
-        setNeedsFreshLoad(true)
-      } else {
-        const found = await nextRepo.listWorkbooks()
-        const saved = await listSavedWorkbooks(nextIdentity).catch(() => [])
-        const byId = new Map(found.map((item) => [item.id, item]))
-        const remembered = saved.map((item) => byId.get(item.workbook_id)).filter((item): item is WorkbookRef => !!item)
-        const rememberedIds = new Set(remembered.map((item) => item.id))
-        const ordered = [...remembered, ...found.filter((item) => !rememberedIds.has(item.id))]
-        setSession(nextSession); setRepo(nextRepo); setAccountId(nextSession.accountId); setEmail(nextSession.email)
-        setMode('google'); setWorkbooks(ordered); setWorkbook(null); setAuthRequired(false); setNeedsRefresh(false)
-      }
+      beginGoogleAuthorization()
+      // The browser navigates to Google and returns through the callback effect below.
     } catch (cause) {
       if (cause instanceof SubultechError) {
         setError(cause.code === 'SUBULTECH_NOT_CONFIGURED' ? 'subultechConfigError'
@@ -410,6 +391,32 @@ export default function App() {
     } finally { finish() }
   }
   useEffect(() => {
+    let cancelled = false
+    const callback = async () => {
+      try {
+        const result = consumeGoogleAuthorizationCallback()
+        if (!result) return
+        setBusy(true)
+        const identity = await exchangeGoogleAuthorizationCode(result.code, result.redirectUri)
+        // The callback effect can be mounted twice by React StrictMode in dev.
+        // Once the one-time authorization code has been exchanged successfully,
+        // persist the SubulTech session and leave the callback route even if the
+        // first effect instance has already been cleaned up.
+        saveIdentity(identity)
+        window.location.replace('/')
+      } catch (cause) {
+        if (cancelled) return
+        // Keep the stable API code visible during OAuth diagnostics without logging tokens.
+        if (cause instanceof SubultechError) console.error('OAuth callback failed:', cause.code, cause.detail || '')
+        setError(cause instanceof SubultechError ? 'subultechAuthError' : 'authError')
+      } finally {
+        if (!cancelled) setBusy(false)
+      }
+    }
+    void callback()
+    return () => { cancelled = true }
+  }, [])
+  useEffect(() => {
     const savedIdentity = loadIdentity()
     if (!savedIdentity) return
     let cancelled = false
@@ -419,7 +426,16 @@ export default function App() {
         if (cancelled) return
         setIdentity(renewedIdentity)
         if (isRememberEnabled()) saveIdentity(renewedIdentity)
-        const googleSession = await authorizeGoogleSilently()
+        let googleSession: GoogleSession
+        try {
+          // Prefer the server-side OAuth refresh token. This survives browser
+          // restarts and does not depend on Google's silent-popup heuristics.
+          googleSession = await refreshGoogleAccessToken(renewedIdentity)
+        } catch {
+          // Compatibility fallback for accounts created before OAuth refresh
+          // tokens were stored by Identity.
+          googleSession = await authorizeGoogleSilently(renewedIdentity.user.email)
+        }
         const nextIdentity = await exchangeGoogleToken(googleSession.accessToken)
         const nextRepo = googleRepository(googleSession)
         const found = await nextRepo.listWorkbooks()
@@ -437,8 +453,12 @@ export default function App() {
           if (cancelled) return
           setWorkbook(selected); setData(loaded); setWorkbooks(null); await storeSnapshot(googleSession, selected, loaded)
         } else setWorkbooks(ordered)
-      } catch {
-        if (!cancelled) { setMode(null); setWorkbooks(null) }
+      } catch (cause) {
+        if (!cancelled) {
+          if (cause instanceof SubultechError) console.error('Session restore failed:', cause.code, cause.detail || '')
+          setMode(null); setWorkbooks(null)
+          setError(cause instanceof SubultechError ? 'subultechAuthError' : 'authError')
+        }
       } finally { if (!cancelled) setRestoring(false) }
     }
     void restore()
@@ -551,6 +571,19 @@ export default function App() {
       await loadSnapshots()
     } catch { setError('signOutError') } finally { finish() }
   }
+  const deleteAccount = async () => {
+    if (mode !== 'google' || !identity || !window.confirm(language === 'ar' ? 'سيتم حذف حسابك وبيانات SubulTech ومراجع ملفاتك. لن تُحذف ملفات Google Sheets. هل تريد المتابعة؟' : 'This deletes your SubulTech account and saved workbook references. Google Sheets files will not be deleted. Continue?')) return
+    if (!start()) return
+    try {
+      await deleteSubultechAccount(identity)
+      clearSession()
+      identityRun.current++
+      setMode(null); setSession(null); setIdentity(null); setAppAccess(null); setRepo(null); setWorkbook(null); setWorkbooks(null); setData(emptyData); setAccountId(''); setEmail(''); setError(null)
+      await loadSnapshots()
+    } catch (cause) {
+      setError(cause instanceof SubultechError && cause.status === 401 ? 'sessionError' : 'signOutError')
+    } finally { finish() }
+  }
   const changeLedger = async () => {
     if (!repo || !navigator.onLine) { setError('offlineError'); return }
     if (!start()) return
@@ -650,8 +683,8 @@ export default function App() {
   const modalNotice = <>{verificationPanel}{error && <div className="message error" role="alert"><AlertCircle size={17} /><span>{t(error)}{writeDetail && <b dir="ltr"> ({writeDetail})</b>}</span></div>}{!online && <div className="message warning"><CloudOff size={17} /><span>{t('offlineBanner')}</span></div>}{(authRequired || mode === 'cache') && <div className="message warning"><AlertCircle size={17} /><span>{t('expiredBanner')}</span><button type="button" className="text-button" disabled={!online || busy} onClick={() => void connect(true)}>{t('reconnect')}</button></div>}{needsFreshLoad && !needsRefresh && <div className="message warning"><RefreshCw size={17} /><span>{t('refreshCopy')}</span><button type="button" className="text-button" disabled={!online || busy || authRequired} onClick={() => void refresh()}>{t('refresh')}</button></div>}{needsRefresh && <div className="message warning"><AlertCircle size={17} /><span>{t('uncertainBanner')}</span><button type="button" className="text-button" disabled={!online || busy || authRequired || mode === 'cache'} onClick={() => void refresh()}>{t('refresh')}</button></div>}</>
   const languageButton = <button className="language-button" onClick={toggleLanguage} aria-label={t('languageToggle')}><Languages size={17} /><span>{language === 'en' ? 'العربية' : 'English'}</span></button>
 
-  if (!workbook) return <div className="welcome-shell"><header className="welcome-header"><Brand t={t} />{languageButton}</header><main className="welcome-main"><div className="welcome-copy"><span className="eyebrow"><span className="eyebrow-dot" />{t('welcomeEyebrow')}</span><h1>{t('welcomeTitle')}</h1><p>{t('welcomeText')}</p><div className="welcome-register" aria-hidden="true"><div className="register-index"><span>R</span><span>01</span><span>02</span><span>03</span></div><div className="register-paper"><div className="register-paper-top"><span>RUFOOF / {t('register')}</span><BookOpen size={18} /></div><div className="paper-row"><span>01</span><i /><b /></div><div className="paper-row"><span>02</span><i /><b /></div><div className="paper-row"><span>03</span><i /><b /></div><div className="paper-row"><span>04</span><i /><b /></div><div className="paper-footer">{t('appTagline')} <span>✳</span></div></div></div></div><div className="welcome-card"><span className="card-number">{workbooks ? '02' : '01'} / RUFOOF</span>{restoring ? <><h2>{t('restoring')}</h2><p>{t('restoringText')}</p></> : workbooks ? <><h2>{t('chooseWorkbook')}</h2><p>{t('chooseWorkbookText')}</p>{error && <div className="message error" role="alert"><AlertCircle size={17} />{t(error)}</div>}{authRequired && <button className="button secondary full" disabled={busy || !online} onClick={() => void connect()}>{t('reconnect')}</button>}<div className="workbook-list">{workbooks.length ? workbooks.map((ref) => <button className="workbook-option" key={ref.id} disabled={busy || !online} onClick={() => void openWorkbook(ref)}><span className="option-icon"><FileSpreadsheet size={19} /></span><strong>{ref.name}</strong><ChevronRight size={18} /></button>) : <p className="muted">{t('noWorkbooks')}</p>}</div><form onSubmit={(e) => void createWorkbook(e)} className="create-ledger"><FormField label={t('workbookName')}><input required value={workbookName} placeholder={t('workbookPlaceholder')} onChange={(e) => setWorkbookName(e.target.value)} /></FormField><button className="button primary" disabled={busy || !online || needsRefresh}>{busy ? t('loading') : t('create')}</button></form>{needsRefresh && <p className="form-hint">{t('uncertainBanner')} <button className="text-button" onClick={() => void connect()}>{t('reconnect')}</button></p>}<button className="back-link" onClick={() => { identityRun.current++; setWorkbooks(null); setMode(null); setMode(null); setRepo(null); setSession(null); setIdentity(null); setAppAccess(null); setError(null) }}>{t('back')}</button></> : <><span className="eyebrow">{t('ledger')}</span><h2>{t('googleTitle')}</h2><p>{t('googleText')}</p>{error && <div className="message error" role="alert"><AlertCircle size={17} />{t(error)}</div>}<button className="button primary full google-button" disabled={busy || !online} onClick={() => void connect()}><span className="google-g" aria-hidden="true">G</span>{busy ? t('connecting') : t('googleButton')}<ArrowRight className="button-arrow" size={17} /></button><div className="or-divider"><span>{t('or')}</span></div><button className="button secondary full" disabled={busy} onClick={() => void startDemo()}><BookOpen size={17} />{t('demoButton')}</button><p className="small-note">{t('demoNote')}</p><div className="privacy-note"><CloudOff size={17} /><span>{t('privacyNote')}</span></div>{snapshots.length > 0 && <div className="snapshot-list"><h3>{t('cachedCopies')}</h3><p>{t('cachedHint')}</p>{snapshots.map((snapshot) => <button key={`${snapshot.accountId}-${snapshot.workbook.id}`} className="snapshot-option" onClick={() => openSnapshot(snapshot)}><span><strong>{snapshot.workbook.name}</strong><small>{snapshot.email} · {t('saved')} {new Date(snapshot.savedAt).toLocaleString(language)}</small></span><span>{t('openCopy')} <ChevronRight size={15} /></span></button>)}</div>}</>}</div></main><footer className="welcome-footer"><span>RUFOOF / {t('ledger')}</span><span>{t('builtWithAI')}</span></footer></div>
 
+  if (!workbook) return <div className="welcome-shell"><header className="welcome-header"><Brand t={t} />{languageButton}</header><main className="welcome-main"><div className="welcome-copy"><span className="eyebrow"><span className="eyebrow-dot" />{t('welcomeEyebrow')}</span><h1>{t('welcomeTitle')}</h1><p>{t('welcomeText')}</p><div className="welcome-register" aria-hidden="true"><div className="register-index"><span>R</span><span>01</span><span>02</span><span>03</span></div><div className="register-paper"><div className="register-paper-top"><span>RUFOOF / {t('register')}</span><BookOpen size={18} /></div><div className="paper-row"><span>01</span><i /><b /></div><div className="paper-row"><span>02</span><i /><b /></div><div className="paper-row"><span>03</span><i /><b /></div><div className="paper-row"><span>04</span><i /><b /></div><div className="paper-footer">{t('appTagline')} <span>✳</span></div></div></div></div><div className="welcome-card"><span className="card-number">{workbooks ? '02' : '01'} / RUFOOF</span>{restoring ? <div className="restore-state" role="status" aria-live="polite"><div className="restore-orbit" aria-hidden="true"><span /><span /><span /></div><div><h2>{t('restoring')}</h2><p>{t('restoringText')}</p></div><div className="restore-skeleton" aria-hidden="true"><i /><i /><i /></div></div> : workbooks ? <><h2>{t('chooseWorkbook')}</h2><p>{t('chooseWorkbookText')}</p>{error && <div className="message error" role="alert"><AlertCircle size={17} />{t(error)}</div>}{authRequired && <button className="button secondary full" disabled={busy || !online} onClick={() => void connect()}>{t('reconnect')}</button>}<div className="workbook-list">{workbooks.length ? workbooks.map((ref) => <button className="workbook-option" key={ref.id} disabled={busy || !online} onClick={() => void openWorkbook(ref)}><span className="option-icon"><FileSpreadsheet size={19} /></span><strong>{ref.name}</strong><ChevronRight size={18} /></button>) : <p className="muted">{t('noWorkbooks')}</p>}</div><form onSubmit={(e) => void createWorkbook(e)} className="create-ledger"><FormField label={t('workbookName')}><input required value={workbookName} placeholder={t('workbookPlaceholder')} onChange={(e) => setWorkbookName(e.target.value)} /></FormField><button className="button primary" disabled={busy || !online || needsRefresh}>{busy ? t('loading') : t('create')}</button></form>{needsRefresh && <p className="form-hint">{t('uncertainBanner')} <button className="text-button" onClick={() => void connect()}>{t('reconnect')}</button></p>}<button className="back-link" onClick={() => { identityRun.current++; setWorkbooks(null); setMode(null); setMode(null); setRepo(null); setSession(null); setIdentity(null); setAppAccess(null); setError(null) }}>{t('back')}</button></> : <><span className="eyebrow">{t('ledger')}</span><h2>{t('googleTitle')}</h2><p>{t('googleText')}</p>{error && <div className="message error" role="alert"><AlertCircle size={17} />{t(error)}</div>}<button className="button primary full google-button" disabled={busy || !online} onClick={() => void connect()}><span className="google-g" aria-hidden="true">G</span>{busy ? t('connecting') : t('googleButton')}<ArrowRight className="button-arrow" size={17} /></button><div className="or-divider"><span>{t('or')}</span></div><button className="button secondary full" disabled={busy} onClick={() => void startDemo()}><BookOpen size={17} />{t('demoButton')}</button><p className="small-note">{t('demoNote')}</p><div className="privacy-note"><CloudOff size={17} /><span>{t('privacyNote')}</span></div>{snapshots.length > 0 && <div className="snapshot-list"><h3>{t('cachedCopies')}</h3><p>{t('cachedHint')}</p>{snapshots.map((snapshot) => <button key={`${snapshot.accountId}-${snapshot.workbook.id}`} className="snapshot-option" onClick={() => openSnapshot(snapshot)}><span><strong>{snapshot.workbook.name}</strong><small>{snapshot.email} · {t('saved')} {new Date(snapshot.savedAt).toLocaleString(language)}</small></span><span>{t('openCopy')} <ChevronRight size={15} /></span></button>)}</div>}</>}</div></main><footer className="welcome-footer"><span>RUFOOF / {t('ledger')}</span><span>{t('builtWithAI')}</span></footer></div>
   return <div className="app-shell"><aside className="sidebar"><Brand t={t} /><div className="sidebar-label">{t('workspace')}</div><nav className="side-nav" aria-label={t('mainNavigation')}>{nav.map(({ page: target, icon: Icon, index }) => <button key={target} className={page === target ? 'active' : ''} onClick={() => setPage(target)} aria-current={page === target ? 'page' : undefined}><Icon size={19} /><span>{t(target)}</span><small>{index}</small></button>)}</nav><div className="sidebar-bottom"><div className="sidebar-ledger"><span className="sidebar-ledger-icon"><BookOpen size={17} /></span><div><small>{t('workbook')}</small><strong>{workbook.name}</strong></div></div><div className="sidebar-foot">RUFOOF <span>•</span> {t('ledger')}</div></div></aside><div className="app-main"><header className="topbar"><div className="breadcrumb"><span>{t('ledger')}</span><ChevronRight size={14} /><strong>{t(page)}</strong></div><div className="topbar-actions"><span className={`connection ${online ? '' : 'is-offline'}`}><span />{!online ? t('offline') : mode === 'demo' ? t('demo') : mode === 'cache' ? t('readOnly') : t('online')}</span>{languageButton}<button className="avatar" onClick={() => setPage('settings')} aria-label={t('settings')}>{mode === 'demo' ? 'D' : (email[0] || 'R').toUpperCase()}</button></div></header><main className="content"><div className="content-inner"><div className="notices" aria-live="polite">{mode === 'demo' && <div className="message demo-message"><BookOpen size={17} /><span>{t('demoBanner')}</span></div>}{!online && <div className="message warning"><CloudOff size={17} /><span>{t('offlineBanner')}</span></div>}{mode === 'cache' && <div className="message warning"><CloudOff size={17} /><span>{t('cacheBanner')}</span><button className="text-button" disabled={!online || busy} onClick={() => void connect(true)}>{t('reconnect')}</button></div>}{needsFreshLoad && !needsRefresh && <div className="message warning"><RefreshCw size={17} /><span>{t('refreshCopy')}</span><button className="text-button" disabled={!online || busy || authRequired} onClick={() => void refresh()}>{t('refresh')}</button></div>}{authRequired && <div className="message warning"><AlertCircle size={17} /><span>{t('expiredBanner')}</span><button className="text-button" disabled={!online || busy} onClick={() => void connect(true)}>{t('reconnect')}</button></div>}{needsRefresh && <div className="message warning"><AlertCircle size={17} /><span>{t('uncertainBanner')}</span><button className="text-button" disabled={!online || busy || authRequired || mode === 'cache'} onClick={() => void refresh()}>{t('refresh')}</button></div>}{verificationPanel}{schemaIssue && <SchemaIssuePanel issue={schemaIssue} t={t} busy={busy} canRepair={mode === 'google' && !!repo?.repairMissingColumn && online && !authRequired} onRepair={() => void repairSchema()} onReload={() => void refresh()} />}{error && <div className="message error" role="alert"><AlertCircle size={17} /><span>{t(error)}{writeDetail && <b dir="ltr"> ({writeDetail})</b>}</span><button className="dismiss" onClick={() => setError(null)} aria-label={t('dismiss')}><X size={16} /></button></div>}{notice && <div className="message success"><Check size={17} /><span>{t(notice)}</span><button className="dismiss" onClick={() => setNotice(null)} aria-label={t('dismiss')}><X size={16} /></button></div>}</div>
   {page === 'overview' && <><div className="page-heading"><div><span className="eyebrow">{t('dashboardEyebrow')}</span><h1>{t('dashboardTitle')}</h1><p>{t('dashboardText')}</p></div><button className="button primary" disabled={!writable || !data.items.length} onClick={() => setDialog({ kind: 'movement' })}><Plus size={17} />{t('recordMovement')}</button></div><div className="summary-grid"><button className="summary-card" onClick={() => setPage('materials')}><span className="summary-icon"><Package size={20} /></span><span className="summary-label">{t('totalMaterials')}</span><strong>{numberText(data.items.length, language)}</strong><small>{t('allMaterials')} <ArrowRight size={14} /></small><span className="summary-index">01</span></button><button className="summary-card" onClick={() => setPage('movements')}><span className="summary-icon blue"><Activity size={20} /></span><span className="summary-label">{t('totalMovements')}</span><strong>{numberText(data.movements.length, language)}</strong><small>{t('allMovements')} <ArrowRight size={14} /></small><span className="summary-index">02</span></button><button className="summary-card attention-card" onClick={() => { setStockFilter('low'); setPage('materials') }}><span className="summary-icon amber"><AlertCircle size={20} /></span><span className="summary-label">{t('lowStock')}</span><strong>{numberText(lowItems.length, language)}</strong><small>{t('needsAttention')} <ArrowRight size={14} /></small><span className="summary-index">03</span></button></div><div className="section-heading"><div><span className="eyebrow">{t('register')}</span><h2>{t('materials')}</h2><p>{t('materialsText')}</p></div><button className="button text-action" onClick={() => setPage('materials')}>{t('viewAll')} <ArrowRight size={16} /></button></div><div className="ledger-panel"><div className="panel-bar"><span><span className="bar-dot" />{t('allMaterials')}</span><span>{numberText(data.items.length, language)} / {t('itemsShort')}</span></div>{data.items.length ? <MaterialsTable items={data.items.slice(0, 5)} data={data} hiddenFields={hiddenFields} t={t} language={language} onDetail={(id) => setDialog({ kind: 'detail', itemId: id })} /> : <Empty title={t('noMaterials')} text={t('noMaterialsText')} />}</div><div className="section-heading activity-heading"><div><span className="eyebrow">{t('ledger')}</span><h2>{t('recentActivity')}</h2></div><button className="button text-action" onClick={() => setPage('movements')}>{t('viewAll')} <ArrowRight size={16} /></button></div><div className="ledger-panel">{sortedMovements.length ? <MovementTable movements={sortedMovements.slice(0, 5)} data={data} hiddenFields={hiddenFields} t={t} language={language} /> : <Empty title={t('noMovements')} text={t('noMovementsText')} icon={<Activity size={21} />} />}</div></>}
   {page === 'materials' && <><div className="page-heading"><div><span className="eyebrow">{t('materialsEyebrow')}</span><h1>{t('materialsTitle')}</h1><p>{t('materialsText')}</p></div><div className="heading-actions"><button className="button secondary" onClick={() => window.print()}><Printer size={17} />{t('print')}</button><button className="button secondary" onClick={() => exportCSV('items')}><Download size={17} />{t('export')}</button><button className="button primary" disabled={!writable} onClick={() => setDialog({ kind: 'item' })}><Plus size={17} />{t('addMaterial')}</button></div></div><div className="ledger-panel"><div className="panel-bar"><span><span className="bar-dot" />{t('register')}</span><span>{numberText(filteredItems.length, language)} / {t('itemsShort')}</span></div><div className="filters"><label className="search-input"><Search size={18} /><span className="sr-only">{t('search')}</span><input value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder={t('searchMaterials')} /></label><label><span className="sr-only">{t('category')}</span><select value={category} onChange={(e) => setCategory(e.target.value)}><option value="">{t('allCategories')}</option>{categories.map((value) => <option key={value}>{value}</option>)}</select></label><label><span className="sr-only">{t('status')}</span><select value={stockFilter} onChange={(e) => setStockFilter(e.target.value)}><option value="">{t('allStatuses')}</option><option value="low">{t('lowStock')}</option><option value="healthy">{t('healthy')}</option></select></label></div>{filteredItems.length ? <MaterialsTable items={filteredItems} data={data} hiddenFields={hiddenFields} t={t} language={language} onDetail={(id) => setDialog({ kind: 'detail', itemId: id })} /> : <Empty title={data.items.length ? t('noResults') : t('noMaterials')} text={data.items.length ? t('noResultsText') : t('noMaterialsText')} />}</div></>}
