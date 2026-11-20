@@ -60,7 +60,7 @@ const unauthorized = (error: unknown) => {
 const loadFailure = (error: unknown): MessageKey => unauthorized(error) ? 'sessionError' : error instanceof WorkbookDataError ? 'workbookDataError' : error instanceof WorkbookDiscoveryError ? 'discoveryError' : 'loadError'
 
 function Brand({ t }: { t: Translate }) {
-  return <div className="brand"><span className="brand-mark" aria-hidden="true"><span /><span /><span /></span><span><strong>{t('appName')}</strong><small>{t('ledger')}</small></span></div>
+  return <div className="brand"><img src="/brand.svg" alt={`${t('appName')} — ${t('ledger')}`} style={{ display: 'block', width: '188px', maxWidth: '100%', height: 'auto' }} /></div>
 }
 
 function Modal({ title, closeLabel, onClose, children }: { title: string; closeLabel: string; onClose: () => void; children: ReactNode }) {
